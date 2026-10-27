@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hexa-udon-client"
+version = "0.1.0"
+description = "第37回高専プロコン ヘキサうどん競技クライアント"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+hexa-udon = "hexa_client.__main__:main"
+
+[tool.setuptools.package-data]
+hexa_client = ["static/*.html", "static/*.js", "static/*.css"]
+
+[tool.setuptools.packages.find]
+include = ["hexa_client*"]

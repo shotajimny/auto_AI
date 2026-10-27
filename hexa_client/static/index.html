@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111b29">
+  <title>ヘキサうどん | 競技クライアント</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="ヘキサうどん ホーム"><span class="brand-mark" aria-hidden="true">六</span><span>HEXA UDON<small>競技クライアント</small></span></a>
+    <div class="header-right"><span id="modeBadge" class="status-badge"><i></i>未接続</span><button id="connectionToggle" class="button secondary small" aria-expanded="true" aria-controls="connectionPanel">接続設定 <span aria-hidden="true">↗</span></button></div>
+  </header>
+
+  <main class="app-main">
+    <div class="page-heading"><div><div class="eyebrow">MISSION CONTROL</div><h1>一手先から、<span>おいしい戦略を。</span></h1><p>マップを確認し、エージェントの行動を組み立てましょう。</p></div><div class="heading-decoration" aria-hidden="true">HEX<br><span>→ UDON</span></div></div>
+
+    <section id="connectionPanel" class="connection-panel panel" aria-labelledby="connectionHeading">
+      <div class="connection-title"><span class="section-index">01</span><div><h2 id="connectionHeading">サーバーに接続</h2><p>ローカルの回答サーバー、または大会サーバー</p></div></div>
+      <form id="connectForm" class="connection-form"><label>サーバー URL<input id="serverUrl" type="url" value="http://127.0.0.1:8080" placeholder="http://127.0.0.1:8080" required autocomplete="off" spellcheck="false"></label><label>チームトークン<input id="teamToken" type="password" placeholder="トークンを入力" required autocomplete="off" spellcheck="false"></label><button id="connectButton" class="button primary" type="submit">接続する <span aria-hidden="true">→</span></button></form>
+      <div class="connection-alternatives"><span>まずは手元で</span><button id="demoButton" class="text-button" type="button">サンプルで試す <span aria-hidden="true">↗</span></button><span class="divider"></span><button id="importConfigButton" class="text-button" type="button">試合設定を読み込む</button><input id="configFile" type="file" accept=".json,application/json" hidden><span class="privacy-note">トークンは保存しません</span></div>
+    </section>
+
+    <div id="globalError" class="error-banner" role="alert" hidden></div>
+    <section class="metrics" aria-label="試合の状況">
+      <article class="metric"><span class="metric-label">MATCH DAY</span><div id="dayValue" class="metric-value">—<small> / —</small></div><span id="dayCaption" class="metric-caption">試合データを読み込んでください</span></article>
+      <article class="metric"><span class="metric-label">TIME REMAINING</span><div id="timeValue" class="metric-value mono">--:--</div><span id="timeCaption" class="metric-caption">残り時間</span></article>
+      <article class="metric"><span class="metric-label">ACTION BUDGET</span><div id="stepsValue" class="metric-value">—<small> STEPS</small></div><span id="stepsCaption" class="metric-caption">1 日の行動ステップ</span></article>
+      <article class="metric metric-accent"><span class="metric-label">COLLECTION TARGETS</span><div id="brandsValue" class="metric-value">—<small> BRANDS</small></div><span id="spotsCaption" class="metric-caption">うどん店を巡ってブランドを集める</span></article>
+    </section>
+
+    <div class="workspace-grid">
+      <section class="board-panel panel" aria-labelledby="boardHeading">
+        <div class="panel-heading"><div class="title-with-index"><span class="section-index">02</span><div><h2 id="boardHeading">フィールド</h2><span id="mapDimensions" class="subtle">HEXAGONAL FIELD</span></div></div><div class="board-tools"><label class="poll-label"><input id="pollEnabled" type="checkbox" checked><span>自動更新</span></label><button id="refreshButton" class="icon-button" title="状態を更新" aria-label="状態を更新">↻</button><button id="fitButton" class="icon-button" title="表示をリセット" aria-label="表示をリセット">⛶</button></div></div>
+        <div class="board-legend"><span><i class="terrain-dot plain"></i>平地</span><span><i class="terrain-dot mountain"></i>山</span><span><i class="terrain-dot road"></i>道路</span><span><i class="terrain-dot pond"></i>池</span><span><i class="terrain-dot shop"></i>うどん店</span><span class="legend-spacer"></span><span><i class="agent-dot own"></i>自チーム</span><span><i class="agent-dot other"></i>相手</span></div>
+        <div id="mapContainer" class="map-container"><svg id="hexMap" role="group" tabindex="0" aria-label="試合マップ。プラスとマイナスで拡大縮小、0で全体を表示" xmlns="http://www.w3.org/2000/svg"></svg><div id="mapEmpty" class="map-empty"><div class="empty-hex" aria-hidden="true">六</div><h3>ここから、作戦をはじめよう。</h3><p>サーバーに接続するか、サンプルマップを読み込むと<br>フィールドとエージェントが表示されます。</p><button id="emptyDemoButton" class="button primary">サンプルを開く <span aria-hidden="true">→</span></button></div><div class="map-coordinate-note">マスを選ぶと詳細を表示</div><div id="mapZoomControls" class="map-zoom-controls" hidden><span id="zoomLevel">100%</span><button id="zoomOutButton" aria-label="マップを縮小" title="縮小（−）">−</button><button id="zoomInButton" aria-label="マップを拡大" title="拡大（＋）">＋</button></div></div>
+        <div id="cellDetails" class="cell-details"><span class="detail-icon" aria-hidden="true">⌖</span><div><strong>マスを選択</strong><p>地形・うどん店・エージェントの情報を確認できます。</p></div></div>
+        <div class="map-footnote"><span id="lastUpdated">まだ更新していません</span><span><i></i>移動方向：0 左上 / 1 右上 / 2 右 / 3 右下 / 4 左下 / 5 左</span></div>
+      </section>
+
+      <aside class="strategy-panel panel" aria-labelledby="strategyHeading">
+        <div class="panel-heading"><div class="title-with-index"><span class="section-index">03</span><div><h2 id="strategyHeading">行動プラン</h2><span class="subtle">PLAN YOUR NEXT MOVE</span></div></div><span id="planStatus" class="mini-badge">未検証</span></div>
+        <div class="strategy-body"><div class="agent-section-heading"><h3>エージェント</h3><span id="agentCount" class="subtle">0 AGENTS</span></div><div id="agentTabs" class="agent-tabs" role="tablist" aria-label="操作するエージェント"></div><div id="agentInfo" class="agent-info"><p class="empty-copy">試合データの読み込み後に編集できます。</p></div>
+          <div class="editor-heading"><h3>行動を追加</h3><button id="undoButton" class="text-button muted" title="最後の行動を削除">↶ 戻す</button></div>
+          <div class="direction-controls" aria-label="移動方向"><button class="direction-button dir-0" data-direction="0"><span>↖</span><small>0 左上</small></button><button class="direction-button dir-1" data-direction="1"><span>↗</span><small>1 右上</small></button><button class="direction-button dir-5" data-direction="5"><span>←</span><small>5 左</small></button><div class="direction-center" aria-hidden="true">HEX</div><button class="direction-button dir-2" data-direction="2"><span>→</span><small>2 右</small></button><button class="direction-button dir-4" data-direction="4"><span>↙</span><small>4 左下</small></button><button class="direction-button dir-3" data-direction="3"><span>↘</span><small>3 右下</small></button></div>
+          <div class="wait-controls"><label for="waitSteps">待機ステップ</label><input id="waitSteps" type="number" min="1" max="1000000" value="1"><button id="waitButton" class="button secondary small">＋ 待機</button></div>
+          <div class="action-list-heading"><span id="actionCount">0 ACTIONS</span><button id="fillWaitButton" class="text-button muted" title="本日の残りステップを待機で埋めます">残りを待機</button><button id="resetButton" class="text-button muted">クリア</button></div><div id="actionList" class="action-list"><span class="empty-copy">方向ボタンで行動を追加</span></div>
+          <details class="json-editor-details"><summary>行動 JSON を直接編集</summary><label for="answerEditor" class="sr-only">エージェントごとの行動配列</label><textarea id="answerEditor" rows="5" spellcheck="false" placeholder="[[2, 3, -1], [0, 1]]"></textarea><button id="applyJsonButton" class="button secondary small">JSON を反映</button></details>
+          <button id="planButton" class="button auto-plan"><span aria-hidden="true">✦</span> 自動でプランを生成 <span aria-hidden="true">↗</span></button>
+          <div id="validationPanel" class="validation-panel" aria-live="polite"><span class="validation-symbol">○</span><div><strong>提出前にプランを検証</strong><p>全エージェントを当日のステップ数に合わせてください。</p></div></div>
+          <div class="submit-row"><button id="validateButton" class="button secondary">プランを検証</button><button id="submitButton" class="button primary">回答を提出 <span aria-hidden="true">→</span></button></div>
+          <button id="advanceButton" class="button secondary practice-advance" hidden>翌日へ進む <span>練習モード</span><span aria-hidden="true">→</span></button>
+          <div class="file-actions"><button id="downloadButton" class="text-button muted">↓ JSON を保存</button><button id="importAnswerButton" class="text-button muted">↑ 回答を読み込む</button><input id="answerFile" type="file" accept=".json,application/json" hidden></div>
+        </div>
+      </aside>
+    </div>
+
+    <section class="activity-panel panel" aria-labelledby="activityHeading"><div class="activity-heading"><div class="title-with-index"><span class="section-index">04</span><h2 id="activityHeading">アクティビティ</h2><span class="subtle">SESSION LOG</span></div><button id="clearLogButton" class="text-button muted">ログをクリア</button></div><ol id="eventLog" class="event-log" aria-live="polite"><li class="log-empty">接続とプランの操作履歴がここに表示されます。</li></ol></section>
+    <footer class="app-footer"><span class="footer-brand">HEXA UDON <span>CLIENT SYSTEM</span></span><span>高専プロコン 2026 · 競技部門</span><span>小さな一手を、大きな戦略へ。</span></footer>
+  </main>
+</body>
+</html>
