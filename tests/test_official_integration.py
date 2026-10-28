@@ -23,6 +23,7 @@ from hexa_client.api import APIError, CompetitionAPI
 from hexa_client.demo import demo_config
 from hexa_client.game import normalize_setting, normalize_state, simulate
 from hexa_client.planner import plan_actions
+from hexa_client.session import Session
 
 
 OFFICIAL_SERVER = os.environ.get("HEXA_OFFICIAL_SERVER")
@@ -105,6 +106,25 @@ def practice_config(seconds=(4, 4)):
 
 @unittest.skipUnless(OFFICIAL_SERVER, "Set HEXA_OFFICIAL_SERVER to run official-server tests")
 class OfficialServerIntegrationTests(unittest.TestCase):
+    def test_background_solver_selects_kinds_and_completes_match_without_browser(self):
+        with official_server(practice_config(seconds=(4, 4)), kind_deadline="3s") as api:
+            session = Session()
+            session.connect(api.url, TEST_TOKEN)
+            try:
+                session.autopilot.start(search_seconds=0.3)
+                session.autopilot._thread.join(timeout=18)
+                self.assertFalse(session.autopilot._thread.is_alive())
+                result = session.snapshot()
+                self.assertEqual(result["autopilot"]["phase"], "completed", result["autopilot"]["error"])
+                self.assertTrue(result["finished"])
+                self.assertEqual([d["day"] for d in result["autopilot"]["days"]], [0, 1])
+                self.assertTrue(all(d["revision"] >= 0 for d in result["autopilot"]["days"]))
+                self.assertEqual(result["kinds"].count(1), 1)
+                self.assertEqual(len(result["history"]), 2)
+                self.assertNotIn(TEST_TOKEN, str(result))
+            finally:
+                session.autopilot.stop()
+
     def test_http_planner_acceptance_rejection_and_next_day_state(self):
         """Validate a generated answer against the independent official engine."""
         with official_server(practice_config()) as api:

@@ -4,7 +4,7 @@ import unittest
 
 from hexa_client.demo import demo_config
 from hexa_client.game import initial_state, normalize_setting, simulate
-from hexa_client.planner import choose_agent_kinds, plan, plan_actions
+from hexa_client.planner import choose_agent_kinds, plan, plan_actions, solve
 
 
 def setting(cells, starts, spots, steps=20, fuel=12):
@@ -16,6 +16,25 @@ def setting(cells, starts, spots, steps=20, fuel=12):
 
 
 class PlannerTests(unittest.TestCase):
+    def test_solver_compares_candidates_and_improves_practice_score(self):
+        s = normalize_setting(demo_config())
+        state = initial_state(s, [0, 0, 0, 1])
+        baseline = simulate(s, state, plan_actions(s, state))
+        solved = solve(s, state, time_budget=1.5)
+        self.assertTrue(solved["validation"]["valid"])
+        self.assertGreater(solved["candidates"], 1)
+        self.assertEqual(solved["validation"]["score"]["brandCount"], 6)
+        self.assertGreater(solved["validation"]["score"]["bowls"], baseline["score"]["bowls"])
+
+    def test_solver_with_no_time_or_cancelled_always_has_valid_fallback(self):
+        s = normalize_setting(demo_config())
+        state = initial_state(s)
+        for kwargs in [{"time_budget": 0}, {"cancelled": lambda: True}]:
+            solved = solve(s, state, **kwargs)
+            self.assertTrue(solved["validation"]["valid"])
+            self.assertEqual(solved["candidates"], 0)
+            self.assertEqual(solved["actions"], [[-36]] * 4)
+
     def test_visits_multiple_brands(self):
         s = setting([[0] * 5], [0], [{"pos": 2, "brand": 3, "stocks": 1},
                                              {"pos": 4, "brand": 8, "stocks": 1}])

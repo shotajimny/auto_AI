@@ -26,6 +26,8 @@
   let mapSignature = "";
   let mapDrag = null;
   let lastMapPan = 0;
+  let lastAutoEvent = 0;
+  let lastAutoPlan = "";
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -54,10 +56,15 @@
     }));
   }
   function day() { return Number(session.state?.day ?? 0); }
+  function routeAgents() {
+    const plan = session.autopilot?.lastPlan;
+    return session.finished && plan?.day === day() && plan.startAgents ? plan.startAgents : currentAgents();
+  }
   function daySteps() { return Number(session.setting?.daySteps?.[day()] ?? 0); }
   function hasMap() { return !!session.setting?.map?.width; }
   function isPractice() { return session.mode === "demo" || session.mode === "offline"; }
   function canOperate() { return hasMap() && !session.finished; }
+  function isAutomatic() { return session.autopilot?.running === true; }
   function reportError(error) {
     const message = error instanceof Error ? error.message : String(error);
     $("globalError").textContent = message;
@@ -89,10 +96,10 @@
       throw error;
     } finally { clearTimeout(timeout); }
   }
-  async function operation(task) {
+  async function operation(task, waitForRefresh = true) {
     if (busy) return;
     busy = true; clearError(); updateControls();
-    try { if (refreshPromise) await refreshPromise.catch(() => {}); clearError(); await task(); } catch (error) { reportError(error); }
+    try { if (waitForRefresh && refreshPromise) await refreshPromise.catch(() => {}); clearError(); await task(); } catch (error) { reportError(error); }
     finally { busy = false; updateControls(); }
   }
   function invalidatePlan() {
@@ -114,14 +121,26 @@
       selectedAgent = 0; selectedPos = null; validation = null;
       actionDay = session.state?.day ?? (hasMap() ? 0 : null);
       if (reset) mapView = null;
+      lastAutoPlan = "";
     } else if (previousDay !== null && session.state?.day !== undefined && session.state.day !== previousDay) {
       validation = null;
       actions = Array.from({length: countAgents()}, () => []);
-      addLog(`DAY ${day() + 1} に切り替わりました。前日の行動をクリアしました。プランを再生成してください。`);
+      if (!isAutomatic()) addLog(`DAY ${day() + 1} に切り替わりました。前日の行動をクリアしました。プランを再生成してください。`);
     } else if (previousState !== JSON.stringify(session.state)) {
       validation = null;
     }
     if (session.state?.day !== undefined) actionDay = session.state.day;
+    const autoPlan = session.autopilot?.lastPlan;
+    if (autoPlan && autoPlan.day === day()) {
+      const key = JSON.stringify([autoPlan.day, autoPlan.actions]);
+      if (key !== lastAutoPlan) {
+        actions = validateActions(autoPlan.actions); validation = autoPlan.validation;
+        lastAutoPlan = key;
+      }
+    }
+    for (const event of session.autopilot?.events || []) {
+      if (event.id > lastAutoEvent) { addLog(event.message, event.level); lastAutoEvent = event.id; }
+    }
     if (session.stateError) {
       $("globalError").textContent = `状態を取得できません：${session.stateError}`;
       $("globalError").hidden = false;
@@ -131,7 +150,20 @@
     renderAll();
   }
   function renderAll() {
-    renderMode(); renderMetrics(); renderAgents(); renderActions(); renderValidation(); renderMap(); renderCellDetails(); updateControls();
+    renderMode(); renderAutopilot(); renderMetrics(); renderAgents(); renderActions(); renderValidation(); renderMap(); renderCellDetails(); updateControls();
+  }
+  function renderAutopilot() {
+    const auto = session.autopilot || {};
+    const names = {idle:"待機中", starting:"開始中", choosing:"役割を選択中", waiting:"開始・状態公開待ち", planning:"探索中", submitting:"提出中", waiting_next_day:"翌日待ち", reconnecting:"再接続中", completed:"完了", stopped:"停止中", error:"確認が必要"};
+    $("autoPhase").textContent = names[auto.phase] || "待機中";
+    $("autoPhase").className = `mini-badge${auto.phase === "completed" ? " valid" : auto.error ? " invalid" : ""}`;
+    $("autoMessage").textContent = auto.message || "役割の選択から計画・検証・提出まで、自動で進めます。";
+    const days = auto.days || [];
+    const bowls = days.reduce((sum,item)=>sum+(item.score?.bowls || 0),0);
+    const brands = new Set(days.flatMap(item=>item.score?.dailyBrands || []));
+    $("autoSummary").textContent = days.length ? `${days.length} / ${session.setting?.daySteps?.length || 0} 日を実行 · 収集予測 ${brands.size} 系列 / ${bowls} 杯` : isPractice() ? "トークン不要。練習を自動で最後まで進められます。" : session.mode === "live" ? "開始すると競技サーバーへ各日の回答を自動提出します。" : "サンプルを開くか、競技サーバーに接続してください。";
+    const list = $("autoDayResults"); list.replaceChildren();
+    days.forEach(item=>{ const li=element("li"); li.append(element("strong","",`DAY ${item.day+1}`),element("span","",`${item.score.dailyBrandCount} 系列 / ${item.score.bowls} 杯`),element("small","",item.revision === null ? "練習を実行" : `受理 ${item.revision}`)); list.append(li); });
   }
   function renderMode() {
     const badge = $("modeBadge");
@@ -151,7 +183,7 @@
     const total = setting.daySteps?.length || 0;
     const current = Math.min(day() + 1, total);
     $("dayValue").replaceChildren(document.createTextNode(String(current).padStart(2, "0")), element("small", "", ` / ${String(total).padStart(2, "0")}`));
-    $("dayCaption").textContent = session.finished ? "すべての日程が終了しました" : isPractice() ? "自分のペースで、試合をシミュレーション" : session.state ? "本日の行動を編集中" : "サーバーの試合開始を待っています";
+    $("dayCaption").textContent = session.finished ? "すべての日程が終了しました" : isAutomatic() ? "自動で計画・検証・提出しています" : isPractice() ? "自分のペースで、試合をシミュレーション" : session.state ? "本日の行動を編集中" : "サーバーの試合開始を待っています";
     $("stepsValue").replaceChildren(document.createTextNode(String(daySteps())), element("small", "", " STEPS"));
     const costs = actions.map((row, i) => plannedCost(row, i));
     const maxCost = costs.length ? Math.max(...costs) : 0;
@@ -277,7 +309,7 @@
   function trafficAt(pos) { return Number((session.state?.traffics || []).find(item => item.pos === pos)?.status ?? 0); }
   function plannedCost(row, agentIndex) {
     if (!hasMap()) return 0;
-    let pos = currentAgents()[agentIndex]?.pos ?? 0, cost = 0;
+    let pos = routeAgents()[agentIndex]?.pos ?? 0, cost = 0;
     for (const action of row) {
       if (action < 0) { cost += -action; continue; }
       const terrain = terrainAt(pos);
@@ -330,7 +362,7 @@
       group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
       cellLayer.append(group);
     }
-    currentAgents().forEach((agent, index) => {
+    routeAgents().forEach((agent, index) => {
       let pos = agent.pos;
       const path = [points.get(pos)].filter(Boolean);
       for (const action of actions[index] || []) {
@@ -399,7 +431,7 @@
     details.append(body);
   }
   function updateControls() {
-    const editDisabled = busy || !canOperate();
+    const editDisabled = busy || !canOperate() || isAutomatic();
     document.querySelectorAll("[data-direction]").forEach(button => { button.disabled = editDisabled; });
     document.querySelectorAll(".action-chip").forEach(button => { button.disabled = editDisabled; });
     ["waitButton", "applyJsonButton", "planButton", "validateButton", "downloadButton", "importAnswerButton"].forEach(id => { $(id).disabled = editDisabled; });
@@ -411,13 +443,17 @@
     $("planButton").disabled = editDisabled || !session.state || !!session.stateError;
     $("validateButton").disabled = editDisabled || !session.state || !!session.stateError;
     $("refreshButton").disabled = busy || refreshBusy || session.mode !== "live";
-    ["connectButton", "demoButton", "emptyDemoButton", "importConfigButton"].forEach(id => { $(id).disabled = busy; });
+    ["connectButton", "demoButton", "emptyDemoButton", "importConfigButton"].forEach(id => { $(id).disabled = busy || isAutomatic(); });
+    $("autoStartButton").disabled = busy || !canOperate() || isAutomatic();
+    $("autoStopButton").disabled = busy || !isAutomatic();
+    $("autoKinds").disabled = busy || isAutomatic(); $("autoSearch").disabled = busy || isAutomatic();
+    $("autoDownloadButton").disabled = !(session.autopilot?.days?.length);
     if ($("agentKind")) $("agentKind").disabled = busy || !canSetKinds();
     $("answerEditor").disabled = editDisabled; $("waitSteps").disabled = editDisabled;
     document.body.classList.toggle("busy", busy);
   }
   function canSetKinds() {
-    return canOperate() && (isPractice() ? day() === 0 && !session.history?.length : !session.state && (session.setting.startsAt === 0 || session.setting.startsAt > Date.now() / 1000));
+    return canOperate() && !isAutomatic() && (isPractice() ? day() === 0 && !session.history?.length : !session.state && (session.setting.startsAt === 0 || session.setting.startsAt > Date.now() / 1000));
   }
   function validateActions(value) {
     if (!Array.isArray(value) || value.length !== countAgents()) throw new Error(`回答は ${countAgents()} エージェント分の配列にしてください。例：[[2, 3], [-1]]`);
@@ -425,15 +461,15 @@
     return value.map(row => row.slice());
   }
   function appendAction(action) {
-    if (!canOperate() || busy) return;
+    if (!canOperate() || busy || isAutomatic()) return;
     if (!actions[selectedAgent]) actions[selectedAgent] = [];
     actions[selectedAgent].push(action); invalidatePlan();
   }
   async function refresh(manual = false) {
-    if (refreshBusy || busy || session.mode !== "live") return;
+    if (refreshBusy || busy || (session.mode !== "live" && !isAutomatic())) return;
     refreshBusy = true; updateControls();
     try {
-      refreshPromise = request("/api/refresh");
+      refreshPromise = request(isAutomatic() ? "/api/session" : "/api/refresh");
       const next = await refreshPromise;
       const recovered = pollFailed;
       if (manual || recovered) clearError();
@@ -475,6 +511,19 @@
     const result = await request("/api/plan", {}); actions = validateActions(result.actions); validation = result.validation;
     renderAll(); addLog(`自動プランを生成しました。${validation?.score ? `獲得予測 ${validation.score.bowls} 杯。` : ""}`);
   }));
+  $("autoStartButton").addEventListener("click", () => operation(async () => {
+    applySession(await request("/api/auto/start", {autoKinds:$("autoKinds").checked, searchSeconds:Number($("autoSearch").value)}));
+  }));
+  $("autoStopButton").addEventListener("click", () => operation(async () => {
+    const stopped = request("/api/auto/stop", {});
+    if (refreshPromise) await refreshPromise.catch(() => {});
+    applySession(await stopped);
+  }, false));
+  $("autoDownloadButton").addEventListener("click", () => {
+    const result = {mode:session.mode, predicted:true, days:session.autopilot?.days || []};
+    const url=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)+"\n"],{type:"application/json"}));
+    const link=element("a"); link.href=url; link.download="hexa-udon-auto-results.json"; document.body.append(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
   $("validateButton").addEventListener("click", () => operation(async () => { validation = await request("/api/validate", {actions}); renderAll(); addLog(validation.valid ? "プランの検証が完了しました。実行可能です。" : "プランに修正が必要です。検証結果を確認してください。", validation.valid ? "info" : "error"); }));
   $("submitButton").addEventListener("click", () => operation(async () => {
     const submittedDay = day();
@@ -534,8 +583,8 @@
   }
   $("hexMap").addEventListener("pointerup", endMapDrag); $("hexMap").addEventListener("pointercancel", endMapDrag);
   $("clearLogButton").addEventListener("click", () => { $("eventLog").replaceChildren(element("li", "log-empty", "ログをクリアしました。")); });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && $("pollEnabled").checked) refresh(); });
-  setInterval(() => { tick(); if (!document.hidden && $("pollEnabled").checked) refresh(); }, 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && ($("pollEnabled").checked || isAutomatic())) refresh(); });
+  setInterval(() => { tick(); if (!document.hidden && ($("pollEnabled").checked || isAutomatic())) refresh(); }, 1000);
   updateControls();
   request("/api/session").then(next => { applySession(next, true); if (hasMap()) addLog("現在のセッションを読み込みました。"); }).catch(reportError);
 })();

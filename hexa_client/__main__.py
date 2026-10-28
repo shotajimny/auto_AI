@@ -9,7 +9,7 @@ import time
 
 from .api import APIError
 from .game import initial_state, normalize_setting, normalize_state, simulate
-from .planner import plan_actions
+from .planner import choose_agent_kinds, solve
 from .server import ClientServer
 from .session import Session
 
@@ -42,12 +42,14 @@ def parser():
         command.add_argument("--known-brands", type=comma_ints, default=[])
         if name == "plan":
             command.add_argument("--output", help="回答JSONの出力先。省略時は標準出力")
+            command.add_argument("--search-seconds", type=float, default=0.8, help="候補を比較する探索時間（0〜5秒）")
         else:
             command.add_argument("--actions", required=True, help="回答JSON")
     play = sub.add_parser("play", help="競技サーバーに接続し各日の計画を自動提出")
     play.add_argument("--url", default="http://127.0.0.1:8080")
     play.add_argument("--token-env", default="PROCON_TOKEN", help="トークンを読む環境変数名")
     play.add_argument("--kinds", type=comma_ints, help="開始前に提出する種別。省略時はサーバー設定を維持")
+    play.add_argument("--auto-kinds", action="store_true", help="受付中なら役割も自動選択する")
     play.add_argument("--poll", type=float, default=1.0, help="状態確認の間隔（秒、最小0.5）")
     play.add_argument("--once", action="store_true", help="1日分を提出したら終了")
     return result
@@ -62,6 +64,14 @@ def auto_play(args):
     if args.kinds is not None:
         session.set_agents(args.kinds)
         print("エージェント種別を提出しました。", file=sys.stderr)
+    elif getattr(args, "auto_kinds", False) and session.state is None:
+        try:
+            session.set_agents(choose_agent_kinds(session.setting))
+            print("エージェント種別を自動選択して提出しました。", file=sys.stderr)
+        except APIError as exc:
+            if (exc.details or {}).get("upstreamStatus") != 403:
+                raise
+            print("種別受付は終了しています。サーバー上の種別で続行します。", file=sys.stderr)
     submitted = set()
     last_error = None
     failures = 0
@@ -73,7 +83,8 @@ def auto_play(args):
                 # A transmission timeout has ambiguous acceptance; never retry
                 # a POST automatically. End the command for explicit recovery.
                 try:
-                    report = session.plan()
+                    remaining = session.state.get("endsAt", time.time() + 10) - time.time() - 1.35
+                    report = session.plan(time_budget=max(0, min(0.8, remaining)))
                     result = session.submit(report["actions"], day)
                 except APIError as exc:
                     # 409 is generated locally BEFORE an action POST: either
@@ -127,7 +138,7 @@ def main(argv=None):
             state = (normalize_state(setting, read_json(args.state)) if args.state
                      else initial_state(setting, args.kinds))
             if args.command == "plan":
-                actions = plan_actions(setting, state, args.known_brands)
+                actions = solve(setting, state, args.known_brands, time_budget=args.search_seconds)["actions"]
                 report = simulate(setting, state, actions, args.known_brands, include_trace=False)
                 if not report["valid"]:
                     raise ValueError("生成した行動計画の検証に失敗しました。")

@@ -19,6 +19,10 @@ class ClientServer(ThreadingHTTPServer):
         self.session = session or Session()
         super().__init__(address, ClientHandler)
 
+    def server_close(self):
+        self.session.autopilot.stop()
+        super().server_close()
+
 
 class ClientHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -112,6 +116,11 @@ class ClientHandler(BaseHTTPRequestHandler):
                 result = session.submit(payload.get("actions"), payload.get("day"))
             elif path == "/api/advance":
                 result = session.advance(payload.get("actions"))
+            elif path == "/api/auto/start":
+                result = session.autopilot.start(auto_kinds=payload.get("autoKinds", True),
+                                                 search_seconds=payload.get("searchSeconds", 0.8))
+            elif path == "/api/auto/stop":
+                result = session.autopilot.stop()
             else:
                 self._send(404, {"error": "指定されたAPIはありません。"})
                 return

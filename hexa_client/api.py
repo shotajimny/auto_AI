@@ -9,10 +9,11 @@ import urllib.request
 
 
 class APIError(Exception):
-    def __init__(self, message, status=502, details=None):
+    def __init__(self, message, status=502, details=None, method=None):
         super().__init__(message)
         self.status = status
         self.details = details
+        self.method = method
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -45,7 +46,7 @@ class CompetitionAPI:
         self._lock = threading.Lock()
         self._last_request = 0.0
 
-    def request(self, method, path, payload=None, deadline=None):
+    def request(self, method, path, payload=None, deadline=None, cancel_event=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {"Procon-Token": self._token, "Accept": "application/json"}
         if data is not None:
@@ -54,6 +55,8 @@ class CompetitionAPI:
                                          headers=headers, method=method)
         with self._lock:
             time.sleep(max(0, 0.25 - (time.monotonic() - self._last_request)))
+            if cancel_event is not None and cancel_event.is_set():
+                raise APIError("自動運転が停止されたため送信を中止しました。", 409)
             timeout = self.timeout
             if deadline is not None:
                 remaining = deadline - time.time()
@@ -77,20 +80,21 @@ class CompetitionAPI:
                     message = raw.decode("utf-8", errors="replace").strip()
                 message = message.replace(self._token, "***")
                 raise APIError(f"競技サーバー HTTP {exc.code}: {message or exc.reason}",
-                               status=502, details={"upstreamStatus": exc.code, "response": details}) from None
+                               status=502, details={"upstreamStatus": exc.code, "response": details},
+                               method=method) from None
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 suffix = " 提出の受理状況は不明です。自動再送はしません。" if method == "POST" else ""
                 # Some URL errors echo their request; never expose the token.
                 message = str(exc).replace(self._token, "***")
-                raise APIError(f"競技サーバーに接続できません: {message}.{suffix}") from None
+                raise APIError(f"競技サーバーに接続できません: {message}.{suffix}", method=method) from None
         if len(raw) > 4_000_000:
-            raise APIError("競技サーバーの応答が大きすぎます。")
+            raise APIError("競技サーバーの応答が大きすぎます。", method=method)
         if not raw.strip():
             return None  # POST /agent returns an empty 200 response.
         try:
             return json.loads(raw)
         except (ValueError, UnicodeError):
-            raise APIError("競技サーバーからJSON以外の応答が返りました。") from None
+            raise APIError("競技サーバーからJSON以外の応答が返りました。", method=method) from None
 
     def setting(self):
         return self.request("GET", "/setting")
@@ -101,12 +105,12 @@ class CompetitionAPI:
     def agents(self, kinds):
         return self.request("POST", "/agent", kinds)
 
-    def submit(self, actions, deadline=None):
-        response = self.request("POST", "/", actions, deadline=deadline)
+    def submit(self, actions, deadline=None, cancel_event=None):
+        response = self.request("POST", "/", actions, deadline=deadline, cancel_event=cancel_event)
         revision = response.get("revision") if isinstance(response, dict) else None
         if type(revision) is not int:
-            raise APIError("提出応答に有効な revision がありません。受理状況を確認してください。")
+            raise APIError("提出応答に有効な revision がありません。受理状況を確認してください。", method="POST")
         if revision < 0:
             raise APIError("行動計画は競技サーバーに拒否されました（revision < 0）。",
-                           status=422, details=response)
+                           status=422, details=response, method="POST")
         return response

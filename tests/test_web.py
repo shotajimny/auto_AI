@@ -73,6 +73,25 @@ class WebClientTests(unittest.TestCase):
         actions = [[-36]] * 4
         self.assertEqual(self.call("/api/submit", {"actions": actions, "day": 0})[0], 400)
 
+    def test_background_solver_runs_to_completion_without_browser_polling(self):
+        status, session = self.call("/api/auto/start", {"searchSeconds": 0.05})
+        self.assertEqual(status, 200)
+        self.assertTrue(session["autopilot"]["running"])
+        self.server.session.autopilot._thread.join(timeout=8)
+        result = self.call("/api/session")[1]
+        self.assertTrue(result["finished"])
+        self.assertEqual(result["autopilot"]["phase"], "completed")
+        self.assertEqual(len(result["autopilot"]["days"]), 3)
+        self.assertEqual(len(result["history"]), 3)
+
+    def test_auto_start_locks_manual_mutations_and_stop_releases_them(self):
+        self.assertEqual(self.call("/api/auto/start", {"searchSeconds": 0.05})[0], 200)
+        self.assertEqual(self.call("/api/demo", {})[0], 409)
+        status, result = self.call("/api/auto/stop", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(result["autopilot"]["running"])
+        self.assertEqual(self.call("/api/demo", {})[0], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

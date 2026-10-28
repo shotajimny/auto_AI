@@ -5,9 +5,10 @@ import threading
 import time
 
 from .api import APIError, CompetitionAPI
+from .autopilot import Autopilot
 from .demo import demo_config
 from .game import initial_state, normalize_setting, normalize_state, simulate
-from .planner import plan_actions
+from .planner import solve
 
 
 class Session:
@@ -23,6 +24,7 @@ class Session:
         self.accepted = {}
         self.history = []
         self.finished = False
+        self.autopilot = Autopilot(self)
 
     def snapshot(self):
         return copy.deepcopy({
@@ -30,6 +32,7 @@ class Session:
             "setting": self.setting, "state": self.state, "stateError": self.state_error,
             "kinds": self.kinds, "knownBrands": sorted(self.known_brands),
             "history": self.history, "finished": self.finished,
+            "autopilot": self.autopilot.snapshot(),
             "notice": ("練習では他チームは動かず、翌日の道路状態は固定です。得点は予測値です。"
                        if self.mode in ("demo", "offline") else
                        "収集結果はローカル予測です。受理と競技上の有効性はサーバーの応答を確認してください。"),
@@ -41,10 +44,16 @@ class Session:
         self.history = []
         self.state_error = None
         self.finished = False
+        self.autopilot.reset()
+
+    def _require_manual_control(self, automatic=False):
+        if self.autopilot.running and not automatic:
+            raise APIError("自動運転中です。手動で変更する前に自動運転を停止してください。", 409)
 
     def import_config(self, config, mode="offline"):
         setting = normalize_setting(config)
         with self.lock:
+            self._require_manual_control()
             self._reset()
             self.mode, self.api, self.setting = mode, None, setting
             self.kinds = [0] * len(setting["agents"])
@@ -56,9 +65,10 @@ class Session:
         return self.import_config(demo_config(), mode="demo")
 
     def connect(self, url, token):
-        api = CompetitionAPI(url, token)
-        setting = normalize_setting(api.setting())
         with self.lock:
+            self._require_manual_control()
+            api = CompetitionAPI(url, token)
+            setting = normalize_setting(api.setting())
             self._reset()
             self.mode, self.api, self.setting = "live", api, setting
             self.kinds = [0] * len(setting["agents"])
@@ -78,19 +88,24 @@ class Session:
         # Both polling and the pre-submit freshness check can discover a new
         # day. Commit the latest accepted prior-day prediction in either case,
         # before a caller can plan using the new positions and fuel.
+        self._record_completed(state["day"])
+        self.state = state
+        self.kinds = [a["kind"] for a in state["agents"]]
+        self.state_error = None
+
+    def _record_completed(self, current_day):
         for day in sorted(self.accepted):
-            if day < state["day"] and not self.accepted[day].get("recorded"):
+            if day < current_day and not self.accepted[day].get("recorded"):
                 item = self.accepted[day]
                 self.known_brands.update(item["validation"]["score"]["dailyBrands"])
                 self.history.append({"day": day, "revision": item["revision"],
                                      "score": item["validation"]["score"], "predicted": True})
                 item["recorded"] = True
-        self.state = state
-        self.kinds = [a["kind"] for a in state["agents"]]
-        self.state_error = None
 
     def refresh(self):
         with self.lock:
+            if self.autopilot.running or self.finished:
+                return self.snapshot()
             if self.mode == "live":
                 try:
                     self.setting = normalize_setting(self.api.setting())
@@ -101,8 +116,9 @@ class Session:
                 self._fetch_state()
             return self.snapshot()
 
-    def set_agents(self, kinds):
+    def set_agents(self, kinds, automatic=False):
         with self.lock:
+            self._require_manual_control(automatic)
             self._require_setting()
             if (not isinstance(kinds, list) or len(kinds) != len(self.setting["agents"])
                     or any(type(k) is not int or k not in (0, 1) for k in kinds)):
@@ -133,15 +149,15 @@ class Session:
             self._require_state()
             return simulate(self.setting, self.state, actions, self.known_brands)
 
-    def plan(self):
+    def plan(self, time_budget=0.8, cancelled=None):
         with self.lock:
             self._require_state()
-            actions = plan_actions(self.setting, self.state, self.known_brands)
-            return {"actions": actions, "validation": self.validate(actions),
-                    "strategy": "未収集系列を優先する燃料制約付き最短路の貪欲法"}
+            return solve(self.setting, self.state, self.known_brands,
+                         time_budget=time_budget, cancelled=cancelled)
 
-    def submit(self, actions, day):
+    def submit(self, actions, day, automatic=False, cancel_event=None):
         with self.lock:
+            self._require_manual_control(automatic)
             self._require_state()
             if self.mode != "live":
                 raise ValueError("練習モードでは提出できません。検証または翌日への進行を利用してください。")
@@ -155,13 +171,19 @@ class Session:
             validation = self.validate(actions)
             if not validation["valid"]:
                 raise APIError("行動計画が不正です。検証結果を修正してください。", 422, validation)
-            response = self.api.submit(actions, deadline=current["endsAt"])
+            if cancel_event is not None and cancel_event.is_set():
+                raise APIError("自動運転が停止されたため提出を中止しました。", 409)
+            options = {"deadline": current["endsAt"]}
+            if cancel_event is not None:
+                options["cancel_event"] = cancel_event
+            response = self.api.submit(actions, **options)
             self.accepted[day] = {**response, "actions": copy.deepcopy(actions),
                                   "validation": validation, "recorded": False}
             return {**response, "day": day, "validation": validation}
 
-    def advance(self, actions):
+    def advance(self, actions, automatic=False):
         with self.lock:
+            self._require_manual_control(automatic)
             self._require_state()
             if self.mode not in ("demo", "offline"):
                 raise ValueError("翌日への進行は練習モードでのみ利用できます。")

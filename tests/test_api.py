@@ -1,5 +1,6 @@
 import io
 import json
+import threading
 import unittest
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -57,6 +58,14 @@ class TransportTests(unittest.TestCase):
         with patch("hexa_client.api.time.time", return_value=100):
             with self.assertRaises(APIError) as cm:
                 self.api.submit([[-10]], deadline=100.5)
+        self.assertEqual(cm.exception.status, 409)
+        self.api._opener.open.assert_not_called()
+
+    def test_stop_after_rate_limit_wait_prevents_post(self):
+        stopped = threading.Event()
+        self.sleep.side_effect = lambda seconds: stopped.set()
+        with self.assertRaises(APIError) as cm:
+            self.api.submit([[-10]], cancel_event=stopped)
         self.assertEqual(cm.exception.status, 409)
         self.api._opener.open.assert_not_called()
 

@@ -23,6 +23,13 @@
       <div class="connection-alternatives"><span>まずは手元で</span><button id="demoButton" class="text-button" type="button">サンプルで試す <span aria-hidden="true">↗</span></button><span class="divider"></span><button id="importConfigButton" class="text-button" type="button">試合設定を読み込む</button><input id="configFile" type="file" accept=".json,application/json" hidden><span class="privacy-note">トークンは保存しません</span></div>
     </section>
 
+    <section class="autopilot-panel panel" aria-labelledby="autopilotHeading">
+      <div class="autopilot-heading"><div><div class="eyebrow">AUTO SOLVER</div><h2 id="autopilotHeading">自動で、最終日まで。</h2><p id="autoMessage" aria-live="polite">役割の選択から計画・検証・提出まで、自動で進めます。</p></div><span id="autoPhase" class="mini-badge">待機中</span></div>
+      <div class="autopilot-controls"><label class="auto-kind-label"><input id="autoKinds" type="checkbox" checked>役割も自動で選ぶ</label><label class="auto-search-label">探索時間<select id="autoSearch"><option value="0.3">短め · 0.3 秒</option><option value="0.8" selected>標準 · 0.8 秒</option><option value="1.5">長め · 1.5 秒</option></select></label><button id="autoStartButton" class="button primary">自動で最後まで解く <span aria-hidden="true">▶</span></button><button id="autoStopButton" class="button secondary" disabled>停止</button></div>
+      <div class="autopilot-summary"><span id="autoSummary">サンプル練習では、トークンなしで試せます。</span><button id="autoDownloadButton" class="text-button" disabled>全日の結果を保存 ↓</button></div>
+      <ol id="autoDayResults" class="auto-day-results" aria-label="自動運転の各日の結果"></ol>
+    </section>
+
     <div id="globalError" class="error-banner" role="alert" hidden></div>
     <section class="metrics" aria-label="試合の状況">
       <article class="metric"><span class="metric-label">MATCH DAY</span><div id="dayValue" class="metric-value">—<small> / —</small></div><span id="dayCaption" class="metric-caption">試合データを読み込んでください</span></article>

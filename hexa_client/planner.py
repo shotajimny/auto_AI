@@ -8,6 +8,7 @@ checked by the rules engine and is padded to the exact day's duration.
 """
 
 import heapq
+import time as clock
 from collections import defaultdict
 
 from .game import (PATROL, SUPPLY, _costs, initial_state, neighbor,
@@ -119,7 +120,7 @@ def _transition(pos, target, start, fuel, duration, needed, supply, limit):
 
 
 def _paths_to_spots(start, start_time, fuel, targets, costs, graph, supply,
-                    limit, total):
+                    limit, total, deadline=None, cancelled=None):
     """Return feasible shortest-time paths to requested cells.
 
     An earlier label with at least as much fuel dominates a later label:
@@ -146,6 +147,9 @@ def _paths_to_spots(start, start_time, fuel, targets, costs, graph, supply,
         heapq.heappush(queue, node)
 
     while queue and expansions < 16000:
+        if expansions % 64 == 0 and ((deadline is not None and clock.monotonic() >= deadline)
+                                    or (cancelled and cancelled())):
+            break
         node = heapq.heappop(queue)
         time, pos, remaining = node
         if (time, remaining) not in labels[pos]:
@@ -176,7 +180,8 @@ def _paths_to_spots(start, start_time, fuel, targets, costs, graph, supply,
     return found
 
 
-def plan_actions(setting, state, known_brands=()):
+def plan_actions(setting, state, known_brands=(), *, order=None, strategy="novel",
+                 deadline=None, cancelled=None):
     """Return the official list-of-agent-action-lists JSON-compatible shape."""
     setting = normalize_setting(setting)
     state = normalize_state(setting, state)
@@ -188,9 +193,13 @@ def plan_actions(setting, state, known_brands=()):
     stock = {s["pos"]: s["stocks"] for s in setting["spots"]}
     match_brands, daily_brands = set(known_brands), set()
 
-    for index, agent in enumerate(state["agents"]):
+    indices = list(range(len(state["agents"]))) if order is None else order
+    for index in indices:
+        agent = state["agents"][index]
         if agent["kind"] == SUPPLY:
             continue
+        if (deadline is not None and clock.monotonic() >= deadline) or (cancelled and cancelled()):
+            break
         pos, fuel, time, commands = agent["pos"], agent["fuel"], 0, []
         visited = set()
 
@@ -230,16 +239,24 @@ def plan_actions(setting, state, known_brands=()):
         if (pos in spots and stock[pos] > 0) or (fuel < limit and pos in supply[1]):
             apply(-1)
         while time < total:
+            if (deadline is not None and clock.monotonic() >= deadline) or (cancelled and cancelled()):
+                break
             targets = {p for p in spots if p not in visited and stock[p] > 0}
             if not targets:
                 break
             candidates = _paths_to_spots(pos, time, fuel, targets, costs, graph,
-                                        supply, limit, total)
+                                        supply, limit, total, deadline, cancelled)
             if not candidates:
                 break
             def priority(item):
                 target, (arrival, remaining, route) = item
                 brand = spots[target]["brand"]
+                if strategy == "near":
+                    return (-arrival, brand not in match_brands, brand not in daily_brands,
+                            remaining, -target)
+                if strategy == "daily":
+                    return (brand not in daily_brands, -arrival, brand not in match_brands,
+                            remaining, -target)
                 return (brand not in match_brands, brand not in daily_brands,
                         -arrival, remaining, -target)
             target, (_, _, route) = max(candidates.items(), key=priority)
@@ -249,10 +266,12 @@ def plan_actions(setting, state, known_brands=()):
                 break  # Defensive; the independent simulator will reject it.
         # End a depleted route at a supply rendezvous when time permits. This
         # uses otherwise idle time and keeps later days from becoming immobile.
-        if time < total and fuel < limit and any(supply[time + 1:]):
+        if (time < total and fuel < limit and any(supply[time + 1:])
+                and (deadline is None or clock.monotonic() < deadline)
+                and not (cancelled and cancelled())):
             rendezvous = set().union(*supply[time + 1:])
             candidates = _paths_to_spots(pos, time, fuel, rendezvous, costs, graph,
-                                        supply, limit, total)
+                                        supply, limit, total, deadline, cancelled)
             refill_routes = [(arrival, target, route) for target, (arrival, _, route)
                              in candidates.items()
                              if any(target in supply[t] for t in range(arrival, total + 1))]
@@ -269,6 +288,54 @@ def plan_actions(setting, state, known_brands=()):
     if not report["valid"]:
         return [[-total] for _ in state["agents"]]
     return plans
+
+
+def solve(setting, state, known_brands=(), time_budget=0.8, cancelled=None):
+    """Compare independently simulated candidates within a wall-clock budget.
+
+    Official score priorities dominate candidate selection. The final fuel
+    reserve breaks otherwise equal scores to keep later days mobile. This
+    bounded multi-start heuristic does not promise the global optimum.
+    """
+    setting = normalize_setting(setting)
+    state = normalize_state(setting, state)
+    if isinstance(time_budget, bool) or not isinstance(time_budget, (int, float)):
+        raise ValueError("探索時間は秒数で指定してください。")
+    if not 0 <= time_budget <= 5:
+        raise ValueError("探索時間は0〜5秒で指定してください。")
+    started = clock.monotonic()
+    deadline = started + time_budget
+    total = setting["daySteps"][state["day"]]
+    best_actions = [[-total] for _ in state["agents"]]
+    best_report = simulate(setting, state, best_actions, known_brands, include_trace=False)
+
+    def rank(report):
+        score = report["score"]
+        return (score["brandCount"], score["dailyBrandCount"], score["bowls"],
+                sum(a["fuel"] for a in report["agents"] if a["kind"] == PATROL))
+
+    best_rank = rank(best_report)
+    count = len(state["agents"])
+    orders = [list(range(count)), list(reversed(range(count)))]
+    orders.extend(list(range(i, count)) + list(range(i)) for i in range(1, count))
+    candidates, seen = 0, set()
+    for strategy in ("novel", "near", "daily"):
+        for order in orders:
+            if clock.monotonic() >= deadline or (cancelled and cancelled()):
+                break
+            signature = (strategy, tuple(order))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            actions = plan_actions(setting, state, known_brands, order=order,
+                                   strategy=strategy, deadline=deadline, cancelled=cancelled)
+            report = simulate(setting, state, actions, known_brands, include_trace=False)
+            candidates += 1
+            if report["valid"] and rank(report) > best_rank:
+                best_actions, best_report, best_rank = actions, report, rank(report)
+    return {"actions": best_actions, "validation": best_report,
+            "candidates": candidates, "elapsedMs": round((clock.monotonic() - started) * 1000),
+            "strategy": "車両の割り当て順と訪問優先度を変えて比較する時間制限付き探索"}
 
 
 def plan(setting, state, known_brands=()):
